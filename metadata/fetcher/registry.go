@@ -50,7 +50,7 @@ func (c *ImageCache) Put(imgRef string, img v1.Image) {
 	c.cache[imgRef] = img
 }
 
-func NewRegistryFetcher(metadataRepo string, metadataTag string, targetsRepo string) *RegistryFetcher {
+func NewRegistryFetcher(metadataRepo, metadataTag, targetsRepo string) *RegistryFetcher {
 	return &RegistryFetcher{
 		metadataRepo: metadataRepo,
 		metadataTag:  metadataTag,
@@ -62,12 +62,12 @@ func NewRegistryFetcher(metadataRepo string, metadataTag string, targetsRepo str
 // DownloadFile downloads a file from an OCI registry, errors out if it failed,
 // its length is larger than maxLength or the timeout is reached.
 func (d *RegistryFetcher) DownloadFile(urlPath string, maxLength int64, timeout time.Duration) ([]byte, error) {
-	imgRef, fileName, isTarget, err := d.parseUrlPath(urlPath)
+	imgRef, fileName, isTarget, err := d.parseImgRef(urlPath)
 	if err != nil {
 		return nil, err
 	}
 
-	// Check cache for image and pull if not found
+	// Check cache for image and only pull if not found
 	var img v1.Image
 	var found bool
 	if img, found = d.cache.Get(imgRef); !found {
@@ -88,7 +88,7 @@ func (d *RegistryFetcher) DownloadFile(urlPath string, maxLength int64, timeout 
 	// Search image manifest for file
 	hash, err := findFileInManifest(img, fileName)
 	if err != nil {
-		// TODO - refactor Fetcher interface file not found error handling?
+		// TODO - refactor Fetcher interface for not found error handling?
 		return nil, &metadata.ErrDownloadHTTP{StatusCode: http.StatusNotFound}
 	}
 
@@ -134,26 +134,26 @@ func getDataFromLayer(img v1.Image, layerHash v1.Hash, maxLength int64, isTarget
 	return data, nil
 }
 
-// parseUrlPath maintains the Fetcher interface by parsing a URL path to an image reference and file name
-func (d *RegistryFetcher) parseUrlPath(urlPath string) (imgRef, fileName string, isTarget bool, err error) {
-	// Check if repo is target or metadata
+// parseImgRef maintains the Fetcher interface by parsing a URL path to an image reference and file name
+func (d *RegistryFetcher) parseImgRef(urlPath string) (imgRef, fileName string, isTarget bool, err error) {
+	// Check if repo is target or metadata\
 	if strings.Contains(urlPath, d.targetsRepo) {
 		// determine if the target path contains subdirectories and set image name accordingly
-		// <repo>/<filename>          -> <repo>:<filename>, layer = <filename>
-		// <repo>/<subdir>/<filename> -> <repo>:<subdir>  ,   img = <filename> -> layer = <filename>
+		// <repo>/<filename>          -> image = <repo>:<filename>, layer = <filename>
+		// <repo>/<subdir>/<filename> -> index = <repo>:<subdir>  , image = <filename> -> layer = <filename>
 		isTarget = true
-		targetPath := strings.TrimPrefix(urlPath, d.targetsRepo+"/")
-		subdir, name, found := strings.Cut(targetPath, "/")
+		target := strings.TrimPrefix(urlPath, d.targetsRepo+"/")
+		subdir, name, found := strings.Cut(target, "/")
 		if found {
 			fileName = name
 			imgRef = fmt.Sprintf("%s:%s", d.targetsRepo, subdir)
 		} else {
-			fileName = targetPath
-			imgRef = fmt.Sprintf("%s:%s", d.targetsRepo, targetPath)
+			fileName = target
+			imgRef = fmt.Sprintf("%s:%s", d.targetsRepo, target)
 		}
 	} else if strings.Contains(urlPath, d.metadataRepo) {
-		// build the metadata image name
 		isTarget = false
+		// build the metadata image name
 		fileName = path.Base(urlPath)
 		imgRef = fmt.Sprintf("%s:%s", d.metadataRepo, d.metadataTag)
 	} else {
@@ -165,6 +165,7 @@ func (d *RegistryFetcher) parseUrlPath(urlPath string) (imgRef, fileName string,
 // findFileInManifest searches the image manifest for a file with the given name and returns its digest
 func findFileInManifest(img v1.Image, name string) (*v1.Hash, error) {
 	// unmarshal manifest layers with annotations
+	// TODO - handle image index manifests
 	mf, err := img.RawManifest()
 	if err != nil {
 		return nil, err
