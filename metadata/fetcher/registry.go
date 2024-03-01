@@ -62,7 +62,7 @@ func NewRegistryFetcher(metadataRepo string, metadataTag string, targetsRepo str
 // DownloadFile downloads a file from an OCI registry, errors out if it failed,
 // its length is larger than maxLength or the timeout is reached.
 func (d *RegistryFetcher) DownloadFile(urlPath string, maxLength int64, timeout time.Duration) ([]byte, error) {
-	imgRef, fileName, err := d.parseUrlPath(urlPath)
+	imgRef, fileName, isTarget, err := d.parseUrlPath(urlPath)
 	if err != nil {
 		return nil, err
 	}
@@ -93,7 +93,7 @@ func (d *RegistryFetcher) DownloadFile(urlPath string, maxLength int64, timeout 
 	}
 
 	// Get data from image layer
-	data, err := getDataFromLayer(img, *hash, maxLength)
+	data, err := getDataFromLayer(img, *hash, maxLength, isTarget)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +101,7 @@ func (d *RegistryFetcher) DownloadFile(urlPath string, maxLength int64, timeout 
 }
 
 // getDataFromLayer returns the data from a layer in an image
-func getDataFromLayer(img v1.Image, layerHash v1.Hash, maxLength int64) ([]byte, error) {
+func getDataFromLayer(img v1.Image, layerHash v1.Hash, maxLength int64, isTarget bool) ([]byte, error) {
 	fileLayer, err := img.LayerByDigest(layerHash)
 	if err != nil {
 		return nil, err
@@ -127,33 +127,39 @@ func getDataFromLayer(img v1.Image, layerHash v1.Hash, maxLength int64) ([]byte,
 	if length > maxLength {
 		return nil, &metadata.ErrDownloadLengthMismatch{Msg: fmt.Sprintf("download failed, length %d is larger than expected %d", length, maxLength)}
 	}
+	// Error if the length of a target file is not equal to what is expected.
+	if isTarget && length != maxLength {
+		return nil, &metadata.ErrDownloadLengthMismatch{Msg: fmt.Sprintf("download failed, length %d is not equal to expected %d", length, maxLength)}
+	}
 	return data, nil
 }
 
 // parseUrlPath maintains the Fetcher interface by parsing a URL path to an image reference and file name
-func (d *RegistryFetcher) parseUrlPath(urlPath string) (imgRef string, fileName string, err error) {
+func (d *RegistryFetcher) parseUrlPath(urlPath string) (imgRef, fileName string, isTarget bool, err error) {
 	// Check if repo is target or metadata
 	if strings.Contains(urlPath, d.targetsRepo) {
 		// determine if the target path contains subdirectories and set image name accordingly
 		// <repo>/<filename>          -> <repo>:<filename>, layer = <filename>
 		// <repo>/<subdir>/<filename> -> <repo>:<subdir>  ,   img = <filename> -> layer = <filename>
-		target := strings.TrimPrefix(urlPath, d.targetsRepo+"/")
-		subdir, name, found := strings.Cut(target, "/")
+		isTarget = true
+		targetPath := strings.TrimPrefix(urlPath, d.targetsRepo+"/")
+		subdir, name, found := strings.Cut(targetPath, "/")
 		if found {
 			fileName = name
 			imgRef = fmt.Sprintf("%s:%s", d.targetsRepo, subdir)
 		} else {
-			fileName = target
-			imgRef = fmt.Sprintf("%s:%s", d.targetsRepo, target)
+			fileName = targetPath
+			imgRef = fmt.Sprintf("%s:%s", d.targetsRepo, targetPath)
 		}
 	} else if strings.Contains(urlPath, d.metadataRepo) {
 		// build the metadata image name
+		isTarget = false
 		fileName = path.Base(urlPath)
 		imgRef = fmt.Sprintf("%s:%s", d.metadataRepo, d.metadataTag)
 	} else {
-		return "", "", fmt.Errorf("urlPath: %s must be in metadata or targets repo", urlPath)
+		return "", "", false, fmt.Errorf("urlPath: %s must be in metadata or targets repo", urlPath)
 	}
-	return imgRef, fileName, nil
+	return imgRef, fileName, isTarget, nil
 }
 
 // findFileInManifest searches the image manifest for a file with the given name and returns its digest
